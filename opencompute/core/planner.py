@@ -13,15 +13,18 @@ import re
 from .models import ModelClient
 from .task import Plan
 
-_CAPABILITIES = ["research", "filesystem"]
+_CAPABILITIES = ["research", "filesystem", "http"]
 
 _SYSTEM_PROMPT = """You convert a user goal into a short plan made of discrete steps.
 
 Available capabilities:
 - research  -> search the web / fetch pages and synthesize findings.
-               input: {"query": "...", "instructions": "..."}
+               input: {"query": "...", "instructions": "..."} and optionally
+               {"findings": "$research"} to reuse the previous research output.
 - filesystem -> write (or read) files in the shared workspace.
                input: {"action": "write", "path": "output/<file>.md", "content": "..."}
+- http      -> make a plain HTTP request (deterministic; no model).
+               input: {"method": "GET", "url": "https://...", "timeout": 10}
 
 Reply with ONLY a JSON object, no markdown fences, shaped exactly like:
 
@@ -32,9 +35,12 @@ Rules:
 - For a report task: do the web research in one or more research steps, then have ONE
   final research step whose instructions asks for the complete report in Markdown
   (with clear section headings and a References list of markdown links).
+- A later research step may set "findings": "$research" to build on earlier findings
+  instead of re-deriving them.
 - Always finish with a filesystem write step: path "output/<name>.md" and content
-  exactly the string "$research" (the runtime substitutes the research output there).
+  exactly the string "$research" (the runtime substitutes the last research output there).
 - Every claim in the report must be backed by sources the research steps collect.
+- Use "http" only when the goal needs a direct HTTP request.
 - "input" must use only the keys shown above for that capability.
 """
 

@@ -11,22 +11,22 @@ import json
 from opencompute.capabilities.web import SearchResult
 from opencompute.core.models import ModelClient, ModelResult
 
-GOOD_SUMMARY = """# Weather API Comparison
+GOOD_SUMMARY = """# Open-Source Projects Comparison
 
 ## Comparison
-Open-Meteo is free, OpenWeatherMap has a free tier, WeatherAPI offers a limited free plan.
+Project A is a web framework, Project B is a build tool, Project C is a database.
 
 ## References
-- [Open-Meteo](https://open-meteo.com)
-- [OpenWeatherMap](https://openweathermap.org)
+- [Project A](https://project-a.dev)
+- [Project B](https://project-b.dev)
 """
 
 # Same content but missing the References section and any URL, so it should
 # fail the deterministic verifier.
-BAD_SUMMARY = """# Weather API Comparison
+BAD_SUMMARY = """# Open-Source Projects Comparison
 
 ## Comparison
-Open-Meteo is free, OpenWeatherMap has a free tier, WeatherAPI offers a limited free plan.
+Project A is a web framework, Project B is a build tool, Project C is a database.
 """
 
 
@@ -35,17 +35,21 @@ def _plan_json() -> str:
         "steps": [
             {
                 "capability": "research",
-                "input": {"query": "weather api providers", "instructions": "find providers"},
-                "purpose": "collect providers",
+                "input": {"query": "open source projects", "instructions": "gather facts"},
+                "purpose": "gather facts",
             },
             {
                 "capability": "research",
-                "input": {"query": "weather api comparison", "instructions": "write the report"},
+                "input": {
+                    "query": "open source projects comparison",
+                    "instructions": "write the report",
+                    "findings": "$research",
+                },
                 "purpose": "write report",
             },
             {
                 "capability": "filesystem",
-                "input": {"action": "write", "path": "output/weather-api-comparison.md", "content": "$research"},
+                "input": {"action": "write", "path": "output/comparison.md", "content": "$research"},
                 "purpose": "save report",
             },
         ],
@@ -61,10 +65,10 @@ class FakeModel(ModelClient):
 
     def complete(self, messages, model=None):
         if any(m.get("role") == "system" for m in messages):
-            return ModelResult(_plan_json(), cost_kind="unknown")
+            return ModelResult(_plan_json(), cost_status="unknown")
         if "Instructions:" in messages[-1]["content"]:
-            return ModelResult(GOOD_SUMMARY, prompt_tokens=100, completion_tokens=200, cost_kind="unknown")
-        return ModelResult("ok", cost_kind="unknown")
+            return ModelResult(GOOD_SUMMARY, prompt_tokens=100, completion_tokens=200, cost_status="unknown")
+        return ModelResult("ok", cost_status="unknown")
 
 
 class EscalationFake(FakeModel):
@@ -72,12 +76,27 @@ class EscalationFake(FakeModel):
 
     def complete(self, messages, model=None):
         if any(m.get("role") == "system" for m in messages):
-            return ModelResult(_plan_json(), cost_kind="unknown")
+            return ModelResult(_plan_json(), cost_status="unknown")
         if "Instructions:" in messages[-1]["content"]:
             if model and "strong" in model:
-                return ModelResult(GOOD_SUMMARY, cost_kind="unknown")
-            return ModelResult(BAD_SUMMARY, cost_kind="unknown")
-        return ModelResult("ok", cost_kind="unknown")
+                return ModelResult(GOOD_SUMMARY, cost_status="unknown")
+            return ModelResult(BAD_SUMMARY, cost_status="unknown")
+        return ModelResult("ok", cost_status="unknown")
+
+
+class PricedModel(FakeModel):
+    """Returns a valid plan and a good report, with exact token costs."""
+
+    default_model = "gpt-4o-mini"
+
+    def complete(self, messages, model=None):
+        if any(m.get("role") == "system" for m in messages):
+            return ModelResult(_plan_json(), prompt_tokens=50, completion_tokens=50,
+                               cost=0.0001, cost_status="estimated", provider="test")
+        if "Instructions:" in messages[-1]["content"]:
+            return ModelResult(GOOD_SUMMARY, prompt_tokens=100, completion_tokens=200,
+                               cost=0.001, cost_status="estimated", provider="test")
+        return ModelResult("ok", cost_status="unknown")
 
 
 class BrokenJsonModel(FakeModel):
@@ -89,14 +108,14 @@ class BrokenJsonModel(FakeModel):
     def complete(self, messages, model=None):
         self.calls += 1
         if self.calls == 1:
-            return ModelResult("not json at all", cost_kind="unknown")
+            return ModelResult("not json at all", cost_status="unknown")
         return FakeModel.complete(self, messages, model=model)
 
 
 def fake_search(query: str, max_results: int = 5) -> list[SearchResult]:
     return [
-        SearchResult(title="Open-Meteo", url="https://open-meteo.com", snippet="free weather"),
-        SearchResult(title="OpenWeatherMap", url="https://openweathermap.org", snippet="freemium"),
+        SearchResult(title="Project A", url="https://project-a.dev", snippet="a web framework"),
+        SearchResult(title="Project B", url="https://project-b.dev", snippet="a build tool"),
     ][:max_results]
 
 

@@ -12,20 +12,22 @@ This is the first milestone: a small, understandable core that already runs a re
 
 ## What it does today
 
-Milestone 1 runs this loop:
+Milestone 2 runs this loop:
 
 ```
 goal  ->  planner (1 LLM call -> validated JSON plan)
-      ->  capabilities (research, filesystem)
+      ->  capabilities (research, filesystem, http)
+      ->  shared context (later steps can reference earlier output)
       ->  deterministic markdown verifier
       ->  on failure, one escalation to a stronger model, then verify again
-      ->  report + SQLite event log
+      ->  report + SQLite event log + model cost/token accounting
 ```
 
-It has exactly two capabilities:
+It has three capabilities:
 
 - `research` — search the web, fetch pages, synthesize a sourced summary.
 - `filesystem` — read/write files, confined to the workspace.
+- `http` — a plain HTTP GET/POST (deterministic; no model involved).
 
 ## Quick start
 
@@ -69,23 +71,37 @@ Everything lives in environment variables, not a config file:
 
 ## Cost honesty
 
-Model calls are recorded with token counts (when the provider returns them) and a
-confidence tag:
+Every model call is recorded with token counts (input/output/total), a
+confidence tag, latency, and the step it belongs to. Confidence is one of:
 
-- `exact` — real token counts and a known per-token price.
-- `estimated` — token counts present, price is an approximation.
-- `unknown` — provider price not in the lookup table.
+- `exact` — a known per-token price and real token counts.
+- `estimated` — token counts present, but the price is an approximation.
+- `unknown` — no usable price; not added to the dollar total.
 
 The lookup table (`opencompute/core/models.py`) is approximate USD per million
-tokens. It is deliberately marked "estimated" and is easy to extend.
+tokens. Unknown-cost calls are counted but never mixed into a dollar figure.
+
+## Benchmark
+
+```bash
+opencompute benchmark                # three open-source projects
+opencompute benchmark --subject "three databases"
+```
+
+This runs a general-purpose task (compare three open-source projects) through
+the full pipeline and reports: task success, model calls, input/output/total
+tokens, model cost, execution time, verification result, retries, and
+escalations. It is the baseline for testing whether OpenCompute really does the
+same useful work with less unnecessary computation.
 
 ## Project layout
 
 ```
 opencompute/
   core/            task, events, database, models, planner, runtime
-  capabilities/    base, filesystem, research, web
+  capabilities/    base, filesystem, research, http, web
   verification/    markdown (deterministic verifier)
+  benchmark.py     the general-purpose benchmark
   cli.py           the command line
 tests/             offline tests (a fake model keeps them fast)
 ```
@@ -99,17 +115,17 @@ PYTHONPATH=. python -m pytest -q
 The suite uses a fake model and fake search, so it runs offline in well under a
 second.
 
-## Known limitations (Milestone 1)
+## Known limitations (Milestone 2)
 
-- Research steps are independent: a later research step does not yet receive an
-  earlier step's findings. (Inter-step data flow is a Milestone 2 goal.)
-- Exactly one escalation is supported, and it re-runs the whole task with the
-  stronger model.
+- One escalation is supported, and it re-runs the whole task with the stronger
+  model.
+- The shared context is short-term only (in-memory per run); there is no
+  persistence of derived state between separate runs yet.
 - Verification is a single deterministic Markdown checker; there is no quality
   estimator or task-type-specific verifier yet.
 - No browser, coding, or computer-use capabilities; no plugin system; no Web UI.
 
 ## Status
 
-Milestone 1 of 7. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design and
+Milestone 2 of 7. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design and
 roadmap, and [`SECURITY.md`](SECURITY.md) for the threat model.

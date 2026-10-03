@@ -56,11 +56,32 @@ class Task:
     model_calls: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
-    estimated_cost: float = 0.0
-    # Cost confidence: one of "exact", "estimated", "unknown".
-    cost_kind: str = "unknown"
-    # Used for the single Milestone 1 escalation (cheaper model -> stronger).
+    # Cost accounting, split by confidence so we never blur exact and guessed.
+    cost_exact: float = 0.0
+    cost_estimated: float = 0.0
+    exact_calls: int = 0
+    estimated_calls: int = 0
+    unknown_calls: int = 0
+    # Used for the single escalation (cheaper model -> stronger).
     escalation: int = 0
+    # Verification retries (re-executions after a failed verify).
+    retries: int = 0
+    # Wall-clock timing for benchmark measurement.
+    started_at: float = 0.0
+    finished_at: float = 0.0
     # Path of the final artifact produced, filled in by the runtime.
     output_path: str = ""
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.tokens_in + self.tokens_out
+
+    @property
+    def duration(self) -> float:
+        return self.finished_at - self.started_at
+
+    @property
+    def total_cost(self) -> float:
+        # Only exact + estimated are known; unknown calls are excluded from $.
+        return self.cost_exact + self.cost_estimated

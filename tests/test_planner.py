@@ -16,7 +16,7 @@ class RawModel(ModelClient):
 
     def complete(self, messages, model=None):
         self.calls += 1
-        return ModelResult(self.text, cost_kind="unknown")
+        return ModelResult(self.text, cost_status="unknown")
 
 
 def test_planner_produces_valid_plan():

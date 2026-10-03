@@ -23,10 +23,16 @@ Even with only two capabilities, the main risks are:
 3. **Untrusted web content.** Fetched pages are treated as data, never executed.
    They are only ever read as text and summarized.
 4. **Arbitrary code execution.** Not present yet — there is no terminal/coding
-   capability in Milestone 1. When one is added, it must run sandboxed with an
-   explicit permission grant, not by default.
+   capability. When one is added, it must run sandboxed with an explicit
+   permission grant, not by default.
 5. **Credential exposure.** The model key comes from the environment. The runtime
    itself does not log API keys — events store only model names and usage numbers.
+6. **Outbound requests (SSRF).** The new `http` capability makes plain HTTP
+   requests. It is restricted to `http://` and `https://` and does not follow the
+   model's instructions about where to call — but a malicious plan could direct
+   it at internal/`localhost` services. Until there is a permission or network
+   policy (Milestone 4), treat it as "can reach whatever the host can reach" and
+   do not expose it to untrusted goals.
 
 ## What is already enforced
 

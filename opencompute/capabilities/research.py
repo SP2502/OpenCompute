@@ -19,6 +19,9 @@ Write a concise, factual summary that answers the user's instructions.
 Instructions:
 {instructions}
 
+Prior findings (use to avoid re-deriving what is already known):
+{findings}
+
 Sources (each marked with a [n] index):
 {sources}
 
@@ -47,6 +50,7 @@ class ResearchCapability(Capability):
     def execute(self, input: dict, ctx: CapabilityContext) -> dict:
         query = (input.get("query") or "").strip()
         instructions = (input.get("instructions") or "").strip()
+        findings = (input.get("findings") or "(none — this is the first research step)").strip()
         if not query:
             return {"status": "failed", "error": "research step missing 'query'"}
 
@@ -81,6 +85,7 @@ class ResearchCapability(Capability):
                 "role": "user",
                 "content": _SYNTHESIS_PROMPT.format(
                     instructions=instructions or query,
+                    findings=findings,
                     sources=source_block,
                 ),
             }]

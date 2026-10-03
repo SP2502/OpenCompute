@@ -25,6 +25,35 @@ from .task import Task
 from ..capabilities.base import Capability, CapabilityContext
 from ..verification.markdown import verify_markdown_report
 
+# For a bare "$capability" reference this is the field considered its main
+# output (so "$research" means the summary text, "$http" the body, etc.).
+_PRIMARY = {"research": "summary", "filesystem": "path", "http": "text"}
+
+
+def _resolve(value, memory: dict):
+    """Replace "$capability" / "$capability.field" references with stored step
+    output. This is deliberately a tiny, explicit string substitution -- not a
+    memory system. Unresolved references are left as literal text."""
+    if isinstance(value, str) and value.startswith("$") and len(value) > 1:
+        parts = value[1:].split(".")
+        item = memory.get(parts[0])
+        if item is None:
+            return value
+        if len(parts) == 1:
+            key = _PRIMARY.get(parts[0])
+            return item.get(key) if key and isinstance(item, dict) else item
+        for p in parts[1:]:
+            if isinstance(item, dict) and p in item:
+                item = item[p]
+            else:
+                return value
+        return item
+    if isinstance(value, dict):
+        return {k: _resolve(v, memory) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve(v, memory) for v in value]
+    return value
+
 
 class TracingModel:
     """Wraps a ModelClient so every call updates the task's counters/log."""
@@ -40,22 +69,41 @@ class TracingModel:
         self.task = task
         self.log = log
         self.active_model = active_model or client.default_model
+        # Filled in by the runtime just before each step so model events carry
+        # an attribution (which step, for what purpose).
+        self.step_id = ""
+        self.purpose = ""
 
     def complete(self, messages: list[dict], model: Optional[str] = None) -> ModelResult:
         chosen = model or self.active_model
         result = self.client.complete(messages, model=chosen)
+
+        # Aggregate into the task, splitting cost by confidence so we never
+        # blur an exact number with a guess.
         self.task.model_calls += 1
         self.task.tokens_in += result.prompt_tokens
         self.task.tokens_out += result.completion_tokens
-        self.task.estimated_cost += result.cost
-        # The most recent call decides the overall confidence level.
-        self.task.cost_kind = result.cost_kind
+        if result.cost_status == "exact":
+            self.task.cost_exact += result.cost
+            self.task.exact_calls += 1
+        elif result.cost_status == "estimated":
+            self.task.cost_estimated += result.cost
+            self.task.estimated_calls += 1
+        else:
+            self.task.unknown_calls += 1
+            # Unknown-cost calls are not added to a dollar total.
+
         self.log("model_call", {
             "model": chosen,
-            "prompt_tokens": result.prompt_tokens,
-            "completion_tokens": result.completion_tokens,
+            "provider": result.provider,
+            "input_tokens": result.prompt_tokens,
+            "output_tokens": result.completion_tokens,
+            "total_tokens": result.total_tokens,
             "cost": round(result.cost, 6),
-            "cost_kind": result.cost_kind,
+            "cost_status": result.cost_status,
+            "latency": round(result.latency, 4),
+            "step_id": self.step_id,
+            "purpose": self.purpose,
         })
         return result
 
@@ -87,7 +135,10 @@ class Runtime:
             self.on_event(kind, data)
 
     def run(self, goal: str, task_id: str = "") -> Task:
+        import time
+
         task = Task(goal=goal, id=task_id)
+        task.started_at = time.time()
         self._emit("task_created", task.id, {"goal": goal})
 
         # --- plan ---
@@ -119,6 +170,7 @@ class Runtime:
 
         if not verification.passed and task.escalation == 0:
             self._escalate(task, tracing, "; ".join(verification.failures))
+            task.retries += 1
             output_path = self._execute(plan, task, tracing, task.id, stronger=True)
             verification = verify_markdown_report(output_path)
             self._emit("verify", task.id, {
@@ -129,16 +181,29 @@ class Runtime:
 
         task.status = "succeeded" if verification.passed else "failed"
         task.output_path = str(output_path)
-        self._emit("cost", task.id, {
-            "model_calls": task.model_calls,
-            "tokens_in": task.tokens_in,
-            "tokens_out": task.tokens_out,
-            "estimated_cost": round(task.estimated_cost, 6),
-            "cost_kind": task.cost_kind,
-            "status": task.status,
-        })
+        task.finished_at = time.time()
+        self._emit("cost", task.id, self._cost_summary(task))
         self._emit("task_done", task.id, {"status": task.status})
         return task
+
+    def _cost_summary(self, task: Task) -> dict:
+        """The task-level cost report, used by both the event log and the CLI."""
+        return {
+            "status": task.status,
+            "model_calls": task.model_calls,
+            "input_tokens": task.tokens_in,
+            "output_tokens": task.tokens_out,
+            "total_tokens": task.total_tokens,
+            "model_cost": round(task.total_cost, 6),
+            "cost_exact": round(task.cost_exact, 6),
+            "cost_estimated": round(task.cost_estimated, 6),
+            "exact_calls": task.exact_calls,
+            "estimated_calls": task.estimated_calls,
+            "unknown_calls": task.unknown_calls,
+            "escalations": task.escalation,
+            "retries": task.retries,
+            "duration": round(task.duration, 3),
+        }
 
     # -- internals ----------------------------------------------------------
 
@@ -153,10 +218,12 @@ class Runtime:
         self._emit("escalate", task.id, {"reason": reason, "to_model": self.strong_model})
 
     def _execute(self, plan, task, tracing, task_id, stronger=False) -> Path:
-        """Walk the steps, feeding research output into the final write."""
-        research_parts: list[str] = []
+        """Walk the steps, feeding each step's output into a shared context that
+        later steps can reference by name (e.g. "$research")."""
         log = self._log_binder(task_id)
-        ctx = CapabilityContext(workspace=self.workspace, log=log, model=tracing)
+        memory: dict = {}  # short-term shared state: capability name -> result
+        ctx = CapabilityContext(workspace=self.workspace, log=log, model=tracing,
+                                context=memory)
         written_path: Optional[Path] = None
 
         for i, step in enumerate(plan.steps):
@@ -166,13 +233,14 @@ class Runtime:
                 continue
 
             capability = self.capabilities[step.capability]
+            tracing.step_id = f"{task_id}:{i}"
+            tracing.purpose = step.purpose
             log("step", {"index": i, "capability": step.capability,
                          "purpose": step.purpose, "status": "running"})
 
-            # The plan writes the assembled research to the file with "$research".
-            inputs = dict(step.input)
-            if step.capability == "filesystem" and inputs.get("content") == "$research":
-                inputs["content"] = "\n\n---\n\n".join(research_parts)
+            # Resolve $references (e.g. "$research", "$research.sources") against
+            # the shared context, rather than dumping it all into every step.
+            inputs = _resolve(step.input, memory)
             result = capability.execute(inputs, ctx)
 
             if result.get("status") != "ok":
@@ -183,10 +251,10 @@ class Runtime:
 
             log("step", {"index": i, "capability": step.capability,
                          "status": "ok", "purpose": step.purpose})
+            log("capability", {"capability": step.capability, "result_keys": list(result.keys())})
+            memory[step.capability] = result
 
             if step.capability == "research":
-                summary = result.get("summary", "")
-                research_parts.append(summary)
                 log("research", {"query": result.get("query", ""),
                                  "sources": result.get("sources", [])})
             elif step.capability == "filesystem":
@@ -198,7 +266,8 @@ class Runtime:
         # Fallback: no filesystem step ran, so dump what research produced.
         final_path = self.workspace / "output" / "report.md"
         final_path.parent.mkdir(parents=True, exist_ok=True)
-        final_path.write_text("\n\n---\n\n".join(research_parts), encoding="utf-8")
+        summary = (memory.get("research") or {}).get("summary", "")
+        final_path.write_text(summary, encoding="utf-8")
         return final_path
 
     def make_workspace(self) -> Path:

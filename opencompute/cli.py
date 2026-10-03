@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from .capabilities.filesystem import FilesystemCapability
+from .capabilities.http import HttpCapability
 from .capabilities.research import ResearchCapability
 from .core.database import Database
 from .core.models import OpenAICompatClient
@@ -63,11 +64,19 @@ def _make_progress() -> callable:
         elif kind == "escalate":
             print(f"  ↻ escalating to {data.get('to_model')}: {data.get('reason')}")
         elif kind == "cost":
-            cost = data.get("estimated_cost", 0.0)
-            kind_label = data.get("cost_kind", "unknown")
-            print(f"\nCost: ${cost:.4f} ({kind_label}; {data.get('model_calls', 0)} model calls)")
-            if kind_label == "unknown":
-                print("  (provider prices not in the lookup table, so cost is unknown)")
+            lines = [
+                "",
+                "Task completed" if data.get("status") == "succeeded" else "Task finished",
+                f"Model calls: {data.get('model_calls', 0)}",
+                f"Input tokens: {data.get('input_tokens', 0)}",
+                f"Output tokens: {data.get('output_tokens', 0)}",
+                f"Total tokens: {data.get('total_tokens', 0)}",
+                f"Model cost: ${data.get('model_cost', 0.0):.6f} (USD)",
+                f"Exact calls: {data.get('exact_calls', 0)} | Estimated calls: {data.get('estimated_calls', 0)} | Unknown calls: {data.get('unknown_calls', 0)}",
+                f"Escalations: {data.get('escalations', 0)} | Verification retries: {data.get('retries', 0)}",
+                f"Duration: {data.get('duration', 0):.2f}s",
+            ]
+            print("\n".join(lines))
 
     return progress
 
@@ -86,6 +95,7 @@ def _build_runtime() -> tuple[Runtime, Path, Database]:
     capabilities = {
         "filesystem": FilesystemCapability(),
         "research": ResearchCapability(),
+        "http": HttpCapability(),
     }
     runtime = Runtime(
         model=model,
@@ -108,15 +118,26 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("capabilities", help="list available capabilities")
 
+    bench_p = sub.add_parser("benchmark", help="run the general-purpose benchmark")
+    bench_p.add_argument("--subject", help="optional subject override, e.g. 'three databases'", default=None)
+
     args = parser.parse_args(argv)
 
     if args.command == "capabilities":
-        print("Available capabilities:\n  research    -- search + fetch + LLM synthesis\n  filesystem  -- read/write files in the workspace")
+        print("Available capabilities:\n  research    -- search + fetch + LLM synthesis\n  filesystem  -- read/write files in the workspace\n  http        -- plain HTTP GET/POST (deterministic)")
         return 0
 
     if not os.environ.get("OPENAI_API_KEY"):
         print("error: set OPENAI_API_KEY (and optionally OPENAI_BASE_URL) first.", file=sys.stderr)
         return 1
+
+    if args.command == "benchmark":
+        from .benchmark import run_benchmark
+
+        runtime, workspace, db = _build_runtime()
+        metrics = run_benchmark(runtime, subject=args.subject)
+        db.close()
+        return 0 if metrics.get("success") else 1
 
     goal = " ".join(args.goal)
     runtime, workspace, db = _build_runtime()

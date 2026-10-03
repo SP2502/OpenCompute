@@ -38,7 +38,14 @@ class ModelResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float = 0.0
-    cost_kind: str = "unknown"  # "exact" | "estimated" | "unknown"
+    # "exact" | "estimated" | "unknown"
+    cost_status: str = "unknown"
+    provider: str = ""
+    latency: float = 0.0  # seconds for the API call
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
 
 
 @dataclass
@@ -73,21 +80,33 @@ class OpenAICompatClient(ModelClient):
         from openai import OpenAI
 
         self._client = OpenAI(base_url=base_url, api_key=api_key)
+        # Label the provider from the endpoint hostname, else default to openai.
+        self.provider = "openai"
+        if base_url:
+            host = base_url.split("://")[-1].split("/")[0]
+            if host:
+                self.provider = host
 
     def complete(self, messages: list[dict], model: Optional[str] = None) -> ModelResult:
+        import time
+
         model = model or self.default_model
+        start = time.perf_counter()
         resp = self._client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=0.2,
         )
+        latency = time.perf_counter() - start
         prompt = resp.usage.prompt_tokens if resp.usage else 0
         completion = resp.usage.completion_tokens if resp.usage else 0
-        cost, kind = self._price(model, prompt, completion)
+        cost, status = self._price(model, prompt, completion)
         return ModelResult(
             text=resp.choices[0].message.content or "",
             prompt_tokens=prompt,
             completion_tokens=completion,
             cost=cost,
-            cost_kind=kind,
+            cost_status=status,
+            provider=self.provider,
+            latency=latency,
         )

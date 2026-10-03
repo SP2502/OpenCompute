@@ -11,7 +11,7 @@ without touching the runtime loop.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -24,12 +24,14 @@ class CapabilityContext:
 
     ``workspace`` is the scratch directory (input/research/artifacts/output).
     ``log`` appends a timeline event. ``model`` is optional because pure
-    code (filesystem) never calls a model.
+    code (filesystem) never calls a model. ``context`` is the short-term shared
+    state between steps: each capability's most recent result, keyed by name.
     """
 
     workspace: Path
     log: Callable[[str, dict], None]
     model: Optional[ModelClient] = None
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 class Capability:
